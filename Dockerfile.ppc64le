@@ -4,6 +4,7 @@ ENV CGO_ENABLED=0
 
 WORKDIR /go/src/github.com/openfaas-incubator/faas-idler
 
+COPY types      types
 COPY main.go    main.go
 COPY vendor     vendor
 

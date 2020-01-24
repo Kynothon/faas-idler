@@ -2,6 +2,7 @@ FROM golang:1.11-alpine AS builder
 
 WORKDIR /go/src/github.com/openfaas-incubator/faas-idler
 
+COPY types      types
 COPY main.go    main.go
 COPY vendor     vendor
 

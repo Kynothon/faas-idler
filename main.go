@@ -15,11 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/types"
+	"github.com/openfaas-incubator/faas-idler/types"
 
 	providerTypes "github.com/openfaas/faas-provider/types"
 	"github.com/openfaas/faas/gateway/metrics"
-	"github.com/openfaas/faas/gateway/requests"
 )
 
 const scaleLabel = "com.openfaas.scale.zero"
@@ -99,7 +98,7 @@ func readFile(path string) (string, error) {
 	return "", nil
 }
 
-func buildMetricsMap(client *http.Client, functions []requests.Function, config types.Config) map[string]float64 {
+func buildMetricsMap(client *http.Client, functions []providerTypes.FunctionStatus, config types.Config) map[string]float64 {
 	query := metrics.NewPrometheusQuery(config.PrometheusHost, config.PrometheusPort, client)
 	metrics := make(map[string]float64)
 
@@ -188,8 +187,8 @@ func reconcile(client *http.Client, config types.Config, credentials *Credential
 	}
 }
 
-func getReplicas(client *http.Client, gatewayURL string, name string, credentials *Credentials) (*requests.Function, error) {
-	item := &requests.Function{}
+func getReplicas(client *http.Client, gatewayURL string, name string, credentials *Credentials) (*providerTypes.FunctionStatus, error) {
+	item := &providerTypes.FunctionStatus{}
 	var err error
 
 	req, _ := http.NewRequest(http.MethodGet, gatewayURL+"system/function/"+name, nil)
@@ -211,8 +210,8 @@ func getReplicas(client *http.Client, gatewayURL string, name string, credential
 	return item, err
 }
 
-func queryFunctions(client *http.Client, gatewayURL string, credentials *Credentials) ([]requests.Function, error) {
-	list := []requests.Function{}
+func queryFunctions(client *http.Client, gatewayURL string, credentials *Credentials) ([]providerTypes.FunctionStatus, error) {
+	list := []providerTypes.FunctionStatus{}
 	var err error
 
 	req, _ := http.NewRequest(http.MethodGet, gatewayURL+"system/functions", nil)
