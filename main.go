@@ -100,20 +100,22 @@ func readFile(path string) (string, error) {
 	return "", nil
 }
 
-func buildMetricsMap(client *http.Client, functions []providerTypes.FunctionStatus, config types.Config) map[string]float64 {
+func buildMetricsMap(client *http.Client, functions []providerTypes.FunctionStatus, config types.Config, namespace string) map[string]float64 {
 	query := metrics.NewPrometheusQuery(config.PrometheusHost, config.PrometheusPort, client)
-	metrics := make(map[string]float64)
 
 	duration := fmt.Sprintf("%dm", int(config.InactivityDuration.Minutes()))
 	// duration := "5m"
+	metricsMap := make(map[string]float64)
 
 	for _, function := range functions {
-		querySt := url.QueryEscape(fmt.Sprintf(
-			`sum(rate(gateway_function_invocation_started{function_name="%s"}[%s])) by (function_name)`,
-			function.Name,
-			duration))
+		//Deriving the function name for multiple namespace support
+		sep := ""
+		if len(namespace) > 0 {
+			sep = "."
+		}
+		functionName := fmt.Sprintf("%s%s%s", function.Name, sep, namespace)
 
-		log.Printf("Querying: %s\n", querySt)
+		querySt := url.QueryEscape(`sum(rate(gateway_function_invocation_total{function_name="` + functionName + `", code=~".*"}[` + duration + `])) by (code, function_name)`)
 
 		res, err := query.Fetch(querySt)
 		if err != nil {
@@ -124,8 +126,8 @@ func buildMetricsMap(client *http.Client, functions []providerTypes.FunctionStat
 		// log.Println(res, function.InvocationCount)
 		if len(res.Data.Result) > 0 || function.InvocationCount == 0 {
 
-			if _, exists := metrics[function.Name]; !exists {
-				metrics[function.Name] = 0
+			if _, exists := metricsMap[functionName]; !exists {
+				metricsMap[functionName] = 0
 			}
 
 			for _, v := range res.Data.Result {
@@ -134,7 +136,7 @@ func buildMetricsMap(client *http.Client, functions []providerTypes.FunctionStat
 					log.Println(v)
 				}
 
-				if v.Metric.FunctionName == function.Name {
+				if v.Metric.FunctionName == functionName {
 					metricValue := v.Value[1]
 					switch metricValue.(type) {
 					case string:
@@ -145,26 +147,49 @@ func buildMetricsMap(client *http.Client, functions []providerTypes.FunctionStat
 							continue
 						}
 
-						metrics[function.Name] = metrics[function.Name] + f
+						metricsMap[functionName] = metricsMap[functionName] + f
 					}
 				}
 			}
 		}
 	}
-	return metrics
+	return metricsMap
 }
 
 func reconcile(client *http.Client, config types.Config, credentials *Credentials) {
-	functions, err := queryFunctions(client, config.GatewayURL, credentials)
 
+	//First reconcile with empty namespace for
+	// provider like faas-swarm which does not support namespaces
+	// and default namespace
+	reconcileNamespace(client, config, credentials, "")
+
+	namespaces, err := getNamespaces(client, config.GatewayURL, credentials)
 	if err != nil {
 		log.Println(err)
 		return
 	}
 
-	metrics := buildMetricsMap(client, functions, config)
+	for _, namespace := range namespaces {
+		reconcileNamespace(client, config, credentials, namespace)
+	}
+}
+
+func reconcileNamespace(client *http.Client, config types.Config, credentials *Credentials, namespace string) {
+	functions, err := queryFunctions(client, config.GatewayURL, namespace, credentials)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	metricsMap := buildMetricsMap(client, functions, config, namespace)
 
 	for _, fn := range functions {
+		//Deriving the function name for multiple namespace support
+		sep := ""
+		if len(namespace) > 0 {
+			sep = "."
+		}
+		functionName := fmt.Sprintf("%s%s%s", fn.Name, sep, namespace)
 
 		if fn.Labels != nil {
 			labels := *fn.Labels
@@ -172,34 +197,78 @@ func reconcile(client *http.Client, config types.Config, credentials *Credential
 
 			if labelValue != "1" && labelValue != "true" {
 				if writeDebug {
-					log.Printf("Skip: %s due to missing label\n", fn.Name)
+					log.Printf("Skip: %s due to missing label\n", functionName)
 				}
 				continue
 			}
 		}
 
-		if v, found := metrics[fn.Name]; found {
+		if v, found := metricsMap[functionName]; found {
 			if v == float64(0) {
-				log.Printf("%s\tidle\n", fn.Name)
+				fmt.Printf("%s\tidle\n", functionName)
 
-				if val, _ := getReplicas(client, config.GatewayURL, fn.Name, credentials); val != nil && val.AvailableReplicas > 0 {
-					sendScaleEvent(client, config.GatewayURL, fn.Name, uint64(0), credentials)
+				if val, _ := getReplicas(client, config.GatewayURL, fn.Name, namespace, credentials); val != nil && val.AvailableReplicas > 0 {
+					sendScaleEvent(client, config.GatewayURL, fn.Name, namespace, uint64(0), credentials)
 				}
 
 			} else {
 				if writeDebug {
-					log.Printf("%s\tactive: %f\n", fn.Name, v)
+					fmt.Printf("%s\tactive: %f\n", functionName, v)
 				}
 			}
 		}
 	}
 }
 
-func getReplicas(client *http.Client, gatewayURL string, name string, credentials *Credentials) (*providerTypes.FunctionStatus, error) {
+func getNamespaces(client *http.Client, gatewayURL string, credentials *Credentials) ([]string, error) {
+	var (
+		err        error
+		namespaces []string
+	)
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/system/namespaces", gatewayURL), nil)
+	req.SetBasicAuth(credentials.Username, credentials.Password)
+	if err != nil {
+		return namespaces, err
+	}
+
+	res, err := client.Do(req)
+	if err != nil {
+		return namespaces, err
+	}
+
+	if res.Body != nil {
+		defer res.Body.Close()
+	}
+
+	if res.StatusCode != http.StatusNotFound {
+		bytesOut, err := ioutil.ReadAll(res.Body)
+		if err != nil {
+			return namespaces, err
+		}
+
+		if len(bytesOut) == 0 {
+			return namespaces, nil
+		}
+
+		err = json.Unmarshal(bytesOut, &namespaces)
+		if err != nil {
+			return namespaces, err
+		}
+	}
+	return namespaces, err
+}
+
+func getReplicas(client *http.Client, gatewayURL, name, namespace string, credentials *Credentials) (*providerTypes.FunctionStatus, error) {
 	item := &providerTypes.FunctionStatus{}
 	var err error
 
-	req, _ := http.NewRequest(http.MethodGet, gatewayURL+"system/function/"+name, nil)
+	functionURL := gatewayURL + "system/function/" + name
+	if len(namespace) > 0 {
+		functionURL, err = addNamespaceParam(functionURL, namespace)
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, functionURL, nil)
+
 	req.SetBasicAuth(credentials.Username, credentials.Password)
 
 	res, err := client.Do(req)
@@ -218,11 +287,16 @@ func getReplicas(client *http.Client, gatewayURL string, name string, credential
 	return item, err
 }
 
-func queryFunctions(client *http.Client, gatewayURL string, credentials *Credentials) ([]providerTypes.FunctionStatus, error) {
+func queryFunctions(client *http.Client, gatewayURL, namespace string, credentials *Credentials) ([]providerTypes.FunctionStatus, error) {
 	list := []providerTypes.FunctionStatus{}
 	var err error
 
-	req, _ := http.NewRequest(http.MethodGet, gatewayURL+"system/functions", nil)
+	functionsURL := gatewayURL + "system/functions"
+	if len(namespace) > 0 {
+		functionsURL, err = addNamespaceParam(functionsURL, namespace)
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, functionsURL, nil)
 	req.SetBasicAuth(credentials.Username, credentials.Password)
 
 	res, err := client.Do(req)
@@ -241,7 +315,7 @@ func queryFunctions(client *http.Client, gatewayURL string, credentials *Credent
 	return list, err
 }
 
-func sendScaleEvent(client *http.Client, gatewayURL string, name string, replicas uint64, credentials *Credentials) {
+func sendScaleEvent(client *http.Client, gatewayURL, name, namespace string, replicas uint64, credentials *Credentials) {
 	if dryRun {
 		log.Printf("dry-run: Scaling %s to %d replicas\n", name, replicas)
 		return
@@ -257,7 +331,11 @@ func sendScaleEvent(client *http.Client, gatewayURL string, name string, replica
 	bodyBytes, _ := json.Marshal(scaleReq)
 	bodyReader := bytes.NewReader(bodyBytes)
 
-	req, _ := http.NewRequest(http.MethodPost, gatewayURL+"system/scale-function/"+name, bodyReader)
+	functionURL := gatewayURL + "system/scale-function/" + name
+	if len(namespace) > 0 {
+		functionURL, err = addNamespaceParam(functionURL, namespace)
+	}
+	req, _ := http.NewRequest(http.MethodPost, functionURL, bodyReader)
 	req.SetBasicAuth(credentials.Username, credentials.Password)
 
 	res, err := client.Do(req)
@@ -302,4 +380,16 @@ func getVersion(client *http.Client, gatewayURL string, credentials *Credentials
 	err = json.Unmarshal(bytesOut, &version)
 
 	return version, err
+}
+
+func addNamespaceParam(u, namespace string) (string, error) {
+	gatewayURL, err := url.Parse(u)
+	if err != nil {
+		return u, err
+	}
+
+	q := gatewayURL.Query()
+	q.Set("namespace", namespace)
+	gatewayURL.RawQuery = q.Encode()
+	return gatewayURL.String(), nil
 }
