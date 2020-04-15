@@ -1,11 +1,11 @@
-TAG?=latest-dev
+TAG?=multiple-ns
 .PHONY: build
 build:
-	docker build -t openfaas/faas-idler:${TAG} .
+	docker build -t viveksyngh/faas-idler:${TAG} .
 
 .PHONY: push
 push:
-	docker push openfaas/faas-idler:${TAG}
+	docker push viveksyngh/faas-idler:${TAG}
 
 .PHONY: ci-armhf-build
 ci-armhf-build:
