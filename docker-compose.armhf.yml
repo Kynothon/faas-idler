@@ -1,7 +1,7 @@
 version: "3.3"
 services:
     faas-idler:
-        image: openfaas/faas-idler:0.1.9-armhf
+        image: openfaas/faas-idler:0.3.0-armhf
         networks:
             - func_functions
         environment:
@@ -13,10 +13,10 @@ services:
         command: "-dry-run=false"
         deploy:
             resources:
-                limits:   # Enable if you want to limit memory usage
-                  memory: 50M
+                limits: # Enable if you want to limit memory usage
+                    memory: 50M
                 reservations:
-                  memory: 30M
+                    memory: 30M
             restart_policy:
                 condition: on-failure
                 delay: 5s
@@ -24,8 +24,8 @@ services:
                 window: 380s
             placement:
                 constraints:
-                    - 'node.platform.os == linux'
-                    - 'node.role == manager'
+                    - "node.platform.os == linux"
+                    - "node.role == manager"
 #        secrets:
 #            - source: basic-auth-user
 #              target: /var/secrets/basic-auth-user
@@ -35,7 +35,6 @@ services:
 networks:
     func_functions:
         external: true
-
 # secrets:
 #     basic-auth-user:
 #         external: true
