@@ -1,8 +1,7 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -19,17 +18,34 @@ import (
 
 	providerTypes "github.com/openfaas/faas-provider/types"
 	"github.com/openfaas/faas/gateway/metrics"
+
+	sdk "github.com/openfaas/faas-cli/proxy"
 )
 
-const scaleLabel = "com.openfaas.scale.zero"
+const (
+	scaleLabel     = "com.openfaas.scale.zero"
+	emptyNamespace = ""
+)
 
 var dryRun bool
 
 var writeDebug bool
 
-type Credentials struct {
+//BasicAuth basic authentication for the the gateway
+type BasicAuth struct {
 	Username string
 	Password string
+}
+
+//Set set Authorization header on request
+func (auth *BasicAuth) Set(req *http.Request) error {
+	req.SetBasicAuth(auth.Username, auth.Password)
+	return nil
+}
+
+//NewHTTPClient returns a new HTTP client
+func NewHTTPClient() *http.Client {
+	return &http.Client{}
 }
 
 func main() {
@@ -46,7 +62,7 @@ func main() {
 		writeDebug = true
 	}
 
-	credentials := Credentials{}
+	auth := &BasicAuth{}
 
 	secretMountPath := "/var/secrets/"
 	if val, ok := os.LookupEnv("secret_mount_path"); ok && len(val) > 0 {
@@ -54,41 +70,59 @@ func main() {
 	}
 
 	if val, err := readFile(path.Join(secretMountPath, "basic-auth-user")); err == nil {
-		credentials.Username = val
+		auth.Username = val
 	} else {
 		log.Printf("Unable to read username: %s", err)
 	}
 
 	if val, err := readFile(path.Join(secretMountPath, "basic-auth-password")); err == nil {
-		credentials.Password = val
+		auth.Password = val
 	} else {
 		log.Printf("Unable to read password: %s", err)
 	}
 
-	client := &http.Client{}
-	version, err := getVersion(client, config.GatewayURL, &credentials)
+	timeout := 3 * time.Second
 
+	sdkClient, err := sdk.NewClient(auth, config.GatewayURL, nil, &timeout)
 	if err != nil {
 		panic(err)
 	}
 
-	log.Printf("Gateway version: %s, SHA: %s\n", version.Version.Release, version.Version.SHA)
+	ctx := context.Background()
 
-	fmt.Printf(`dry_run: %t
+	version, err := sdkClient.GetSystemInfo(ctx)
+	var (
+		release string
+		sha     string
+	)
+
+	if err != nil {
+		log.Printf(err.Error())
+	}
+
+	if _, ok := version["orchestration"]; !ok {
+		v := version["version"].(map[string]interface{})
+		release = v["release"].(string)
+		sha = v["sha"].(string)
+	}
+
+	log.Printf("Gateway version: %s, SHA: %s\n", release, sha)
+
+	log.Printf(`dry_run: %t
 gateway_url: %s
 inactivity_duration: %s
 reconcile_interval: %s
 `, dryRun, config.GatewayURL, config.InactivityDuration, config.ReconcileInterval)
 
 	if len(config.GatewayURL) == 0 {
-		fmt.Println("gateway_url (faas-netes/faas-swarm) is required.")
+		log.Println("gateway_url (faas-netes/faas-swarm) is required.")
 		os.Exit(1)
 	}
 
 	for {
-		reconcile(client, config, &credentials)
+		reconcile(ctx, sdkClient, config)
 		time.Sleep(config.ReconcileInterval)
-		fmt.Printf("\n")
+		log.Printf("\n")
 	}
 }
 
@@ -100,8 +134,8 @@ func readFile(path string) (string, error) {
 	return "", nil
 }
 
-func buildMetricsMap(client *http.Client, functions []providerTypes.FunctionStatus, config types.Config, namespace string) map[string]float64 {
-	query := metrics.NewPrometheusQuery(config.PrometheusHost, config.PrometheusPort, client)
+func buildMetricsMap(functions []providerTypes.FunctionStatus, config types.Config, namespace string) map[string]float64 {
+	query := metrics.NewPrometheusQuery(config.PrometheusHost, config.PrometheusPort, NewHTTPClient())
 
 	duration := fmt.Sprintf("%dm", int(config.InactivityDuration.Minutes()))
 	// duration := "5m"
@@ -115,7 +149,12 @@ func buildMetricsMap(client *http.Client, functions []providerTypes.FunctionStat
 		}
 		functionName := fmt.Sprintf("%s%s%s", function.Name, sep, namespace)
 
-		querySt := url.QueryEscape(`sum(rate(gateway_function_invocation_total{function_name="` + functionName + `", code=~".*"}[` + duration + `])) by (code, function_name)`)
+		querySt := url.QueryEscape(fmt.Sprintf(
+			`sum(rate(gateway_function_invocation_started{function_name="%s"}[%s])) by (function_name)`,
+			functionName,
+			duration))
+
+		log.Printf("Query: %s\n", querySt)
 
 		res, err := query.Fetch(querySt)
 		if err != nil {
@@ -123,7 +162,6 @@ func buildMetricsMap(client *http.Client, functions []providerTypes.FunctionStat
 			continue
 		}
 
-		// log.Println(res, function.InvocationCount)
 		if len(res.Data.Result) > 0 || function.InvocationCount == 0 {
 
 			if _, exists := metricsMap[functionName]; !exists {
@@ -156,32 +194,32 @@ func buildMetricsMap(client *http.Client, functions []providerTypes.FunctionStat
 	return metricsMap
 }
 
-func reconcile(client *http.Client, config types.Config, credentials *Credentials) {
+func reconcile(ctx context.Context, sdkClient *sdk.Client, config types.Config) {
 
 	//First reconcile with empty namespace for
 	// provider like faas-swarm which does not support namespaces
 	// and default namespace
-	reconcileNamespace(client, config, credentials, "")
+	reconcileNamespace(ctx, sdkClient, config, emptyNamespace)
 
-	namespaces, err := getNamespaces(client, config.GatewayURL, credentials)
+	namespaces, err := sdkClient.ListNamespaces(ctx)
 	if err != nil {
 		log.Println(err)
 		return
 	}
 
 	for _, namespace := range namespaces {
-		reconcileNamespace(client, config, credentials, namespace)
+		reconcileNamespace(ctx, sdkClient, config, namespace)
 	}
 }
 
-func reconcileNamespace(client *http.Client, config types.Config, credentials *Credentials, namespace string) {
-	functions, err := queryFunctions(client, config.GatewayURL, namespace, credentials)
+func reconcileNamespace(ctx context.Context, sdkClient *sdk.Client, config types.Config, namespace string) {
+	functions, err := sdkClient.ListFunctions(ctx, namespace)
 	if err != nil {
 		log.Println(err)
 		return
 	}
 
-	metricsMap := buildMetricsMap(client, functions, config, namespace)
+	metricsMap := buildMetricsMap(functions, config, namespace)
 
 	for _, fn := range functions {
 		//Deriving the function name for multiple namespace support
@@ -205,149 +243,37 @@ func reconcileNamespace(client *http.Client, config types.Config, credentials *C
 
 		if v, found := metricsMap[functionName]; found {
 			if v == float64(0) {
-				fmt.Printf("%s\tidle\n", functionName)
+				log.Printf("%s\tidle\n", functionName)
 
-				if val, _ := getReplicas(client, config.GatewayURL, fn.Name, namespace, credentials); val != nil && val.AvailableReplicas > 0 {
-					sendScaleEvent(client, config.GatewayURL, fn.Name, namespace, uint64(0), credentials)
+				val, err := sdkClient.GetFunctionInfo(ctx, fn.Name, namespace)
+
+				if err != nil {
+					log.Println(err.Error())
+					continue
+				}
+
+				replicaCount := uint64(0)
+				if dryRun {
+					log.Printf("dry-run: Scaling %s to %d replicas\n", fn.Name, replicaCount)
+					continue
+				}
+
+				if err == nil && val.AvailableReplicas > 0 {
+					err = sdkClient.ScaleFunction(ctx, fn.Name, namespace, replicaCount)
+
+					if err != nil {
+						log.Println(err.Error())
+					} else {
+						log.Printf("scaled function %s to %d replica(s)\n", fn.Name, replicaCount)
+					}
 				}
 
 			} else {
 				if writeDebug {
-					fmt.Printf("%s\tactive: %f\n", functionName, v)
+					log.Printf("%s\tactive: %f\n", functionName, v)
 				}
 			}
 		}
-	}
-}
-
-func getNamespaces(client *http.Client, gatewayURL string, credentials *Credentials) ([]string, error) {
-	var (
-		err        error
-		namespaces []string
-	)
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/system/namespaces", gatewayURL), nil)
-	req.SetBasicAuth(credentials.Username, credentials.Password)
-	if err != nil {
-		return namespaces, err
-	}
-
-	res, err := client.Do(req)
-	if err != nil {
-		return namespaces, err
-	}
-
-	if res.Body != nil {
-		defer res.Body.Close()
-	}
-
-	if res.StatusCode != http.StatusNotFound {
-		bytesOut, err := ioutil.ReadAll(res.Body)
-		if err != nil {
-			return namespaces, err
-		}
-
-		if len(bytesOut) == 0 {
-			return namespaces, nil
-		}
-
-		err = json.Unmarshal(bytesOut, &namespaces)
-		if err != nil {
-			return namespaces, err
-		}
-	}
-	return namespaces, err
-}
-
-func getReplicas(client *http.Client, gatewayURL, name, namespace string, credentials *Credentials) (*providerTypes.FunctionStatus, error) {
-	item := &providerTypes.FunctionStatus{}
-	var err error
-
-	functionURL := gatewayURL + "system/function/" + name
-	if len(namespace) > 0 {
-		functionURL, err = addNamespaceParam(functionURL, namespace)
-	}
-
-	req, _ := http.NewRequest(http.MethodGet, functionURL, nil)
-
-	req.SetBasicAuth(credentials.Username, credentials.Password)
-
-	res, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-
-	if res.Body != nil {
-		defer res.Body.Close()
-	}
-
-	bytesOut, _ := ioutil.ReadAll(res.Body)
-
-	err = json.Unmarshal(bytesOut, &item)
-
-	return item, err
-}
-
-func queryFunctions(client *http.Client, gatewayURL, namespace string, credentials *Credentials) ([]providerTypes.FunctionStatus, error) {
-	list := []providerTypes.FunctionStatus{}
-	var err error
-
-	functionsURL := gatewayURL + "system/functions"
-	if len(namespace) > 0 {
-		functionsURL, err = addNamespaceParam(functionsURL, namespace)
-	}
-
-	req, _ := http.NewRequest(http.MethodGet, functionsURL, nil)
-	req.SetBasicAuth(credentials.Username, credentials.Password)
-
-	res, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-
-	if res.Body != nil {
-		defer res.Body.Close()
-	}
-
-	bytesOut, _ := ioutil.ReadAll(res.Body)
-
-	err = json.Unmarshal(bytesOut, &list)
-
-	return list, err
-}
-
-func sendScaleEvent(client *http.Client, gatewayURL, name, namespace string, replicas uint64, credentials *Credentials) {
-	if dryRun {
-		log.Printf("dry-run: Scaling %s to %d replicas\n", name, replicas)
-		return
-	}
-
-	scaleReq := providerTypes.ScaleServiceRequest{
-		ServiceName: name,
-		Replicas:    replicas,
-	}
-
-	var err error
-
-	bodyBytes, _ := json.Marshal(scaleReq)
-	bodyReader := bytes.NewReader(bodyBytes)
-
-	functionURL := gatewayURL + "system/scale-function/" + name
-	if len(namespace) > 0 {
-		functionURL, err = addNamespaceParam(functionURL, namespace)
-	}
-	req, _ := http.NewRequest(http.MethodPost, functionURL, bodyReader)
-	req.SetBasicAuth(credentials.Username, credentials.Password)
-
-	res, err := client.Do(req)
-
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	log.Println("Scale", name, res.StatusCode, replicas)
-
-	if res.Body != nil {
-		defer res.Body.Close()
 	}
 }
 
@@ -357,39 +283,4 @@ type Version struct {
 		Release string `json:"release"`
 		SHA     string `json:"sha"`
 	}
-}
-
-func getVersion(client *http.Client, gatewayURL string, credentials *Credentials) (Version, error) {
-	version := Version{}
-	var err error
-
-	req, _ := http.NewRequest(http.MethodGet, gatewayURL+"system/info", nil)
-	req.SetBasicAuth(credentials.Username, credentials.Password)
-
-	res, err := client.Do(req)
-	if err != nil {
-		return version, err
-	}
-
-	if res.Body != nil {
-		defer res.Body.Close()
-	}
-
-	bytesOut, _ := ioutil.ReadAll(res.Body)
-
-	err = json.Unmarshal(bytesOut, &version)
-
-	return version, err
-}
-
-func addNamespaceParam(u, namespace string) (string, error) {
-	gatewayURL, err := url.Parse(u)
-	if err != nil {
-		return u, err
-	}
-
-	q := gatewayURL.Query()
-	q.Set("namespace", namespace)
-	gatewayURL.RawQuery = q.Encode()
-	return gatewayURL.String(), nil
 }
