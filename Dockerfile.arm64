@@ -2,14 +2,16 @@ FROM golang:1.13-alpine AS builder
 
 WORKDIR /go/src/github.com/openfaas-incubator/faas-idler
 
-ENV GO111MODULE=off
+ENV GO111MODULE=on
 ENV CGO_ENABLED=0
 
 COPY types      types
 COPY main.go    main.go
 COPY vendor     vendor
+COPY go.mod     go.mod
+COPY go.sum     go.sum
 
-RUN go build -o /usr/bin/faas-idler .
+RUN go build -mod=vendor -o /usr/bin/faas-idler .
 
 FROM alpine:3.11
 
