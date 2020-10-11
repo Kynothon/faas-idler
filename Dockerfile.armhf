@@ -13,7 +13,7 @@ COPY go.sum     go.sum
 
 RUN go build -mod=vendor -o /usr/bin/faas-idler .
 
-FROM alpine:3.11
+FROM alpine:3.12
 
 RUN addgroup -S app && adduser -S -g app app
 RUN mkdir -p /home/app

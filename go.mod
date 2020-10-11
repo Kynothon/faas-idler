@@ -1,6 +1,6 @@
 module github.com/openfaas-incubator/faas-idler
 
-go 1.15
+go 1.13
 
 require (
 	github.com/beorn7/perks v0.0.0-20180321164747-3a771d992973 // indirect
