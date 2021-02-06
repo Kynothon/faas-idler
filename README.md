@@ -33,11 +33,11 @@ docker stack deploy func -c docker-compose.yml
 
 #### Kubernetes
 
-The faas-idler is installed as part of the [helm chart](https://github.com/openfaas/faas-netes/tree/master/chart/openfaas), make sure that you pass the argument "--set faasIdler.dryRun=false" if you want the idler to go live and make changes to the API.
+The faas-idler is installed as part of the [helm chart](https://github.com/openfaas/faas-netes/tree/master/chart/openfaas), make sure that you pass the argument "--set faasIdler.readOnly=false" if you want the idler to go live and make changes to the API.
 
 #### Activating a function for scale to zero
 
-Now decorate some functions with the label: `com.openfaas.scale.zero: "true"` and watch the idler scale them to zero. You should also change the `-dry-run` flag to `false`. For example:
+Now decorate some functions with the label: `com.openfaas.scale.zero: "true"` and watch the idler scale them to zero. You should also change the `-read-only` flag to `false`. For example:
 
 ```sh
 faas-cli store deploy figlet --label "com.openfaas.scale.zero=true"
@@ -74,7 +74,7 @@ Try using the ClusterIP/Cluster Service instead and port 8080.
 
 * Command-line args
 
-`-dry-run` - don't send scaling event 
+`-read-only` - don't send scaling event 
 
 How it works:
 

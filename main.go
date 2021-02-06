@@ -27,9 +27,11 @@ const (
 	emptyNamespace = ""
 )
 
-var dryRun bool
+var readOnly bool
 
 var writeDebug bool
+
+var secretMountPath string
 
 //BasicAuth basic authentication for the the gateway
 type BasicAuth struct {
@@ -55,7 +57,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	flag.BoolVar(&dryRun, "dry-run", false, "use dry-run for scaling events")
+	flag.BoolVar(&readOnly, "read-only", false, "use read-only for scaling events [default: false]")
+	flag.StringVar(&secretMountPath, "secret-mount-path", "/var/secrets/", "mount path for secrets [default: /var/secrets/]")
 	flag.Parse()
 
 	if val, ok := os.LookupEnv("write_debug"); ok && (val == "1" || val == "true") {
@@ -64,7 +67,6 @@ func main() {
 
 	auth := &BasicAuth{}
 
-	secretMountPath := "/var/secrets/"
 	if val, ok := os.LookupEnv("secret_mount_path"); ok && len(val) > 0 {
 		secretMountPath = val
 	}
@@ -108,11 +110,11 @@ func main() {
 
 	log.Printf("Gateway version: %s, SHA: %s\n", release, sha)
 
-	log.Printf(`dry_run: %t
+	log.Printf(`read_only: %t
 gateway_url: %s
 inactivity_duration: %s
 reconcile_interval: %s
-`, dryRun, config.GatewayURL, config.InactivityDuration, config.ReconcileInterval)
+`, readOnly, config.GatewayURL, config.InactivityDuration, config.ReconcileInterval)
 
 	if len(config.GatewayURL) == 0 {
 		log.Println("gateway_url (faas-netes/faas-swarm) is required.")
@@ -253,8 +255,8 @@ func reconcileNamespace(ctx context.Context, sdkClient *sdk.Client, config types
 				}
 
 				replicaCount := uint64(0)
-				if dryRun {
-					log.Printf("dry-run: Scaling %s to %d replicas\n", fn.Name, replicaCount)
+				if readOnly {
+					log.Printf("read-only: Scaling %s to %d replicas\n", fn.Name, replicaCount)
 					continue
 				}
 

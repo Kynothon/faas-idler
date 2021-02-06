@@ -11,14 +11,17 @@ github.com/matttproud/golang_protobuf_extensions/pbutil
 # github.com/mitchellh/go-homedir v1.1.0
 github.com/mitchellh/go-homedir
 # github.com/openfaas/faas v0.0.0-20200422142642-18f6c720b50d
+## explicit
 github.com/openfaas/faas/gateway/metrics
 github.com/openfaas/faas/gateway/requests
 # github.com/openfaas/faas-cli v0.0.0-20201016131043-6401791a5965
+## explicit
 github.com/openfaas/faas-cli/config
 github.com/openfaas/faas-cli/proxy
 github.com/openfaas/faas-cli/schema/store/v2
 github.com/openfaas/faas-cli/stack
 # github.com/openfaas/faas-provider v0.15.1
+## explicit
 github.com/openfaas/faas-provider/auth
 github.com/openfaas/faas-provider/httputil
 github.com/openfaas/faas-provider/logs

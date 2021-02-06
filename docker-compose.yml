@@ -10,7 +10,7 @@ services:
             prometheus_port: "9090"
             inactivity_duration: "5m"
             reconcile_interval: "30s"
-        command: "-dry-run=false"
+        command: "-read-only=false"
         deploy:
             resources:
                 limits: # Enable if you want to limit memory usage

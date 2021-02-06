@@ -1,4 +1,4 @@
-FROM golang:1.13-alpine AS builder
+FROM golang:1.15-alpine AS builder
 
 WORKDIR /go/src/github.com/openfaas-incubator/faas-idler
 
@@ -13,19 +13,16 @@ COPY go.sum     go.sum
 
 RUN go build -mod=vendor -o /usr/bin/faas-idler .
 
-FROM alpine:3.12
+FROM alpine:3.13
 
-RUN addgroup -S app && adduser -S -g app app
-RUN mkdir -p /home/app
+RUN addgroup -S faas && adduser -S -g faas faas
 
-WORKDIR /home/app
+COPY --from=builder /usr/bin/faas-idler /usr/bin/faas-idler
 
-COPY --from=builder /usr/bin/faas-idler /home/app/
-
-RUN chown -R app /home/app
-USER app
+RUN chown -R faas /usr/bin/faas-idler
+USER faas
 
 EXPOSE 8080
 VOLUME /tmp
 
-ENTRYPOINT ["/home/app/faas-idler"]
+ENTRYPOINT ["/usr/bin/faas-idler"]

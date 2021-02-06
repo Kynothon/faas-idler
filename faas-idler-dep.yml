@@ -12,7 +12,7 @@ spec:
     spec:
       containers:
         - name: faas-idler
-          image: openfaas/faas-idler:0.3.0
+          image: openfaas/faas-idler:0.4.0
           imagePullPolicy: Always
           env:
             - name: gateway_url
@@ -29,7 +29,7 @@ spec:
               value: "true"
           command:
             - /home/app/faas-idler
-            - -dry-run=false
+            - -read-only=false
           volumeMounts:
             - name: auth
               readOnly: true
